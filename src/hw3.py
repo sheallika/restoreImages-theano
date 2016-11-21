@@ -23,6 +23,8 @@ from hw3_nn import LogisticRegression, HiddenLayer, LeNetConvPoolLayer, train_nn
 from skimage import transform, exposure
 import numpy as np
 from theano.tensor.signal import pool
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from hw3_utils_prob4 import load_data_prob4
 
@@ -398,7 +400,7 @@ def MY_lenet(ds_rate=1.000001,learning_rate=0.1, n_epochs=300,nkerns=[32, 64,64]
     # TRAIN MODEL #
     ###############
     print('... training')
-    train_nn(train_model, validate_model, test_model, n_epochs, M=M,N=N, Rot=Rot, Flip=Flip,switch_noise=switch_noise,var_noise=var_noise, verbose = True,prob=prob)
+    train_nn(train_model, validate_model, test_model, n_epochs, batch_size=batch_size,M=M,N=N, Rot=Rot, Flip=Flip,switch_noise=switch_noise,var_noise=var_noise, verbose = True,prob=prob)
 
 
 
@@ -569,7 +571,8 @@ def MY_CNN( n_epochs=128, batch_size=500):
     # create a function to compute the mistakes that are made by the model
     test_model = theano.function(
         [x],
-        layer9.output,
+        layer9.output
+
     )
 
     validate_model = theano.function(
@@ -644,7 +647,7 @@ def MY_CNN( n_epochs=128, batch_size=500):
     ###############
     print('... training')
     # early-stopping parameters
-    patience = 10000  # look as this many examples regardless
+    patience = 3000  # look as this many examples regardless
     patience_increase = 2  # wait this much longer when a new best is found
     improvement_threshold = 0.99  # a relative improvement of this much is considered significant
     validation_frequency = min(n_train_batches, patience // 2)
@@ -660,6 +663,9 @@ def MY_CNN( n_epochs=128, batch_size=500):
 
     epoch = 0
     done_looping = False
+    test_data_8, test_data_8_y =load_data_prob4(theano_shared=False)[2]
+    
+
 
     while (epoch < n_epochs) and (not done_looping):
         epoch = epoch + 1
@@ -672,10 +678,7 @@ def MY_CNN( n_epochs=128, batch_size=500):
             
             x_corrupted = corrupt_input(minibatch_index)
             
-            if(iter % n_train_batches == 0):
-                for k in xrange(10):
-                    plt.imsave('image_corrupt_{0}.png'.format(k), x_corrupted[k].reshape((3,32,32)).transpose(1,2,0));
-                        
+
             cost_ij = train_model(x_corrupted, minibatch_index)
 
             if (iter + 1) % validation_frequency == 0:
@@ -686,7 +689,7 @@ def MY_CNN( n_epochs=128, batch_size=500):
                     x_corrupted = corrupt_input_valid(k)
                     validation_losses[k] = validate_model(x_corrupted,k)
                 this_validation_loss = numpy.mean(validation_losses)
-                print('epoch %i, minibatch %i/%i, RMSE error on validation set  %f %%' %
+                print('epoch %i, minibatch %i/%i, error (MSE) on validation set  %f ' %
                       (epoch, minibatch_index + 1, n_train_batches,
                        this_validation_loss))
 
@@ -703,25 +706,22 @@ def MY_CNN( n_epochs=128, batch_size=500):
                     best_iter = iter
 
                     # test it on the test set
-                    x_corrupted = corrupt_input(0)
+                    x_corrupted = corrupt_input_test(0)
                     test_restored = test_model(x_corrupted)
-                    for k in xrange(10):
-                        plt.imsave('image_corrupt_after_{0}_iter_{1}.png'.format(best_iter, k), x_corrupted[k].reshape((3,32,32)).transpose(1,2,0))
-                        plt.imsave('restored_image_{0}_{1}.png'.format(best_iter, k), test_restored[k].reshape((3,32,32)).transpose(1,2,0))
-                        
-                    #test_score = numpy.mean(test_losses)
+                 
+                    for k in xrange(8):
+                        plt.imsave('image_corrupt_'+str(k)+'.png', x_corrupted[k].reshape((3,32,32)).transpose(1,2,0))
+                        plt.imsave('image_restored_'+str(k)+'.png',test_restored[k].reshape((3,32,32)).transpose(1,2,0))
+                        plt.imsave('image_original_'+str(k)+'.png',numpy.reshape(test_data_8[k],(3,32,32)).transpose(1,2,0))
+
                     
+            
             if patience <= iter:
                 done_looping = True
-                break
+                break  
+                    #test_score = numpy.mean(test_losses)
+                    
 
-    end_time = timeit.default_timer()
-    print('Optimization complete.')
-    print('Best validation score of %f %% obtained at iteration %i, '
-          'with test performance %f %%' %
-          (best_validation_loss * 100., best_iter + 1, test_score * 100.))
-    print(('The code for file ' +
-           os.path.split(__file__)[1] +
-           ' ran for %.2fm' % ((end_time - start_time) / 60.)), sys.stderr)
+    print(('The code for file ran for %.2fm' % ((end_time - start_time) / 60.)), sys.stderr)
 
 

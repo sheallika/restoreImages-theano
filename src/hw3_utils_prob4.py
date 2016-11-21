@@ -13,8 +13,6 @@ import scipy.io
 import tarfile
 import theano
 import theano.tensor as T
-from skimage import transform, exposure
-import random
 
 def shared_dataset(data_xy, borrow=True):
     """ Function that loads the dataset into shared variables
@@ -41,7 +39,7 @@ def shared_dataset(data_xy, borrow=True):
     # lets ous get around this issue
     return shared_x, T.cast(shared_y, 'int32')
 
-def load_data(ds_rate=None, theano_shared=True, M=0, N=0):
+def load_data_prob4(ds_rate=None, theano_shared=True):
     ''' Loads the SVHN dataset
 
     :type ds_rate: float
@@ -106,23 +104,8 @@ def load_data(ds_rate=None, theano_shared=True, M=0, N=0):
     test_set['data']=test_set['data']/255.
     test_set['labels']=test_set['labels'].flatten()
     
-    trans1=random.randint(-M,M)
-    trans2=random.randint(-M,M)
-    
-    train_set=(numpy.resize(train_set['data'], (len(train_set['data']),3,32,32)),train_set['labels'])  
-    #print len(train_set)
-    for idx in range(0,len(train_set[0])):
-        image=train_set[0][idx]
-        #print len(train_set)
-        tform = transform.AffineTransform(translation = (trans1,trans2))
-        train_set[0][idx][0] = transform.warp(image[0], tform)
-        train_set[0][idx][1] = transform.warp(image[1], tform, output_shape=((32,32)))
-        train_set[0][idx][2] = transform.warp(image[2], tform, output_shape=((32,32)))
-
-
-      
-    test_set=(numpy.resize(test_set['data'], (len(test_set['data']),3,32,32)),test_set['labels'])
-    
+    train_set=(train_set['data'],train_set['labels'])
+    test_set=(test_set['data'],test_set['labels'])
     
 
     # Downsample the training dataset if specified
@@ -141,15 +124,11 @@ def load_data(ds_rate=None, theano_shared=True, M=0, N=0):
     # numpy.ndarray of 1 dimension (vector) that has the same length as
     # the number of rows in the input. It should give the target
     # to the example with the same index in the input.
-    
-    lentest=len(test_set)
-    
+
     if theano_shared:
-        test_set_x, test_set_y = shared_dataset(test_set)   
-        valid_set_x, valid_set_y = shared_dataset(valid_set)       
+        test_set_x, test_set_y = shared_dataset(test_set)
+        valid_set_x, valid_set_y = shared_dataset(valid_set)
         train_set_x, train_set_y = shared_dataset(train_set)
-        
-        
 
         rval = [(train_set_x, train_set_y), (valid_set_x, valid_set_y),
             (test_set_x, test_set_y)]
@@ -157,3 +136,4 @@ def load_data(ds_rate=None, theano_shared=True, M=0, N=0):
         rval = [train_set, valid_set, test_set]
 
     return rval
+

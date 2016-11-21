@@ -12,16 +12,22 @@ This code is based on
 """
 
 from __future__ import print_function
-
+import random
 import timeit
 import inspect
 import sys
-import numpy
+import numpy 
+import time
+import math
+import BatchNormalization
 from theano.tensor.nnet import conv
 import theano
 import theano.tensor as T
 from theano.tensor.nnet import conv2d
+from theano.tensor.signal import pool
 from theano.tensor.signal import downsample
+from hw3_utils import shared_dataset, load_data
+from matplotlib import pyplot as plt
 
 class LogisticRegression(object):
     """Multi-class Logistic Regression Class
@@ -211,6 +217,228 @@ class HiddenLayer(object):
         # parameters of the model
         self.params = [self.W, self.b]
 
+def drop(input, p=0.5): 
+    """
+    :type input: numpy.array
+    :param input: layer or weight matrix on which dropout is applied
+    
+    :type p: float or double between 0. and 1. 
+    :param p: p probability of NOT dropping out a unit, therefore (1.-p) is the drop rate.
+    
+    """            
+    rng = numpy.random.RandomState(1234)
+    srng = T.shared_randomstreams.RandomStreams(rng.randint(999999))
+    mask = srng.binomial(n=1, p=p, size=input.shape, dtype=theano.config.floatX)
+    return input * mask
+
+
+class DropoutHiddenLayer(object):
+    def __init__(self, rng, is_train, input, n_in, n_out, W=None, b=None,
+                 activation=T.tanh, p=0.3):
+        """
+        Hidden unit activation is given by: activation(dot(input,W) + b)
+
+        :type rng: numpy.random.RandomState
+        :param rng: a random number generator used to initialize weights
+        
+        :type is_train: theano.iscalar   
+        :param is_train: indicator pseudo-boolean (int) for switching between training and prediction
+
+        :type input: theano.tensor.dmatrix
+        :param input: a symbolic tensor of shape (n_examples, n_in)
+
+        :type n_in: int
+        :param n_in: dimensionality of input
+
+        :type n_out: int
+        :param n_out: number of hidden units
+
+        :type activation: theano.Op or function
+        :param activation: Non linearity to be applied in the hidden
+                           layer
+                           
+        :type p: float or double
+        :param p: probability of NOT dropping out a unit   
+        """
+        self.input = input
+
+        if W is None:
+            W_values = numpy.asarray(
+                rng.uniform(
+                    low=-numpy.sqrt(6. / (n_in + n_out)),
+                    high=numpy.sqrt(6. / (n_in + n_out)),
+                    size=(n_in, n_out)
+                ),
+                dtype=theano.config.floatX
+            )
+            if activation == theano.tensor.nnet.sigmoid:
+                W_values *= 4
+
+            W = theano.shared(value=W_values, name='W', borrow=True)
+
+        if b is None:
+            b_values = numpy.zeros((n_out,), dtype=theano.config.floatX)
+            b = theano.shared(value=b_values, name='b', borrow=True)
+
+        
+        self.W = W
+        self.b = b
+
+        lin_output = T.dot(input, self.W) + self.b
+        
+        output = (
+            lin_output if activation is None
+            else activation(lin_output)
+        )
+        
+        
+        # multiply output and drop -> in an approximation the scaling effects cancel out 
+        train_output = drop(output,p)
+        
+        #is_train is a pseudo boolean theano variable for switching between training and prediction 
+        self.output = T.switch(T.neq(is_train, 0), train_output, p*output)
+        
+        # parameters of the model
+
+        self.params = [self.W, self.b]
+
+class ConvLayer(object):
+    """ Layer of a convolution """
+
+    def __init__(self, rng, input, filter_shape, image_shape, subsamp=(1,1), bmode='valid'):
+        """
+        Allocate a LeNetConvPoolLayer with shared variable internal parameters.
+
+        :type rng: numpy.random.RandomState
+        :param rng: a random number generator used to initialize weights
+
+        :type input: theano.tensor.dtensor4
+        :param input: symbolic image tensor, of shape image_shape
+
+        :type filter_shape: tuple or list of length 4
+        :param filter_shape: (number of filters, num input feature maps,
+                              filter height, filter width)
+
+        :type image_shape: tuple or list of length 4
+        :param image_shape: (batch size, num input feature maps,
+                             image height, image width)
+
+        :type subsamp: tuple or list of length 2
+        :param subsamp: the downsampling (pooling) factor (#rows, #cols)
+        """
+
+        assert image_shape[1] == filter_shape[1]
+        self.input = input
+
+        # there are "num input feature maps * filter height * filter width"
+        # inputs to each hidden unit
+        fan_in = numpy.prod(filter_shape[1:])
+        # each unit in the lower layer receives a gradient from:
+        # "num output feature maps * filter height * filter width" /
+        #   pooling size
+        fan_out = (filter_shape[0] * numpy.prod(filter_shape[2:]) //
+                   numpy.prod(subsamp))
+        # initialize weights with random weights
+        W_bound = numpy.sqrt(6. / (fan_in + fan_out))
+        self.W = theano.shared(
+            numpy.asarray(
+                rng.uniform(low=-W_bound, high=W_bound, size=filter_shape),
+                dtype=theano.config.floatX
+            ),
+            borrow=True
+        )
+
+        # the bias is a 1D tensor -- one bias per output feature map
+        b_values = numpy.zeros((filter_shape[0],), dtype=theano.config.floatX)
+        self.b = theano.shared(value=b_values, borrow=True)
+
+        # convolve input feature maps with filters
+        conv_out = conv2d(
+            input=input,
+            filters=self.W,
+            filter_shape=filter_shape,
+            input_shape=image_shape,
+            subsample=subsamp,
+            border_mode=bmode
+        )
+
+        self.output = T.nnet.relu(conv_out + self.b.dimshuffle('x', 0, 'x', 'x'))
+
+        # store parameters of this layer
+        self.params = [self.W, self.b]
+
+        # keep track of model input
+        self.input = input
+
+    def mse(self, y, bs):
+        """Return the mean  square error of the output
+        of this model
+
+        :type y: theano.tensor.TensorType
+        :param y: corresponds to a vector that gives for each example the
+                  correct label
+        bs : batch size 
+        """
+
+        return T.sum((self.output.flatten(2) - y) ** 2) / bs        
+
+'''
+Code adapted from:
+https://github.com/shuuki4/Batch-Normalization
+'''
+class BNConvLayer(object) :
+    def __init__(self, input_shape, filter_shape, border_mode="valid", BN=True) :
+
+        # input_shape : shape of input / (minibatch size, input channel num, image height, image width)
+        # filter_shape : shape of filter / (# of new channels to make, input channel num, filter height, filter width)
+        # BN : boolean value that determines to apply Batch Normalization or not
+
+        self.BN = BN
+        self.input_shape = input_shape
+        self.filter_shape = filter_shape
+        self.border_mode = border_mode
+
+        # initialize W (weight) randomly
+        rng = numpy.random.RandomState(int(time.time()))
+        w_bound = math.sqrt(filter_shape[1] * filter_shape[2] * filter_shape[3])
+        self.W = theano.shared(numpy.asarray(rng.uniform(low=-1.0/w_bound, high=1.0/w_bound, size=filter_shape), dtype=theano.config.floatX), name='W', borrow=True)
+        # initialize b (bias) with zeros
+        self.b = theano.shared(numpy.asarray(numpy.zeros(filter_shape[0],), dtype=theano.config.floatX), name='b', borrow=True)
+        if BN == True :
+            # calculate appropriate input_shape
+            new_shape = list(input_shape)
+            new_shape[1] = filter_shape[0]
+            if border_mode == "valid" :
+                new_shape[2] -= (filter_shape[2]-1)
+                new_shape[3] -= (filter_shape[3]-1)
+            elif border_mode == "full" :
+                new_shape[2] += (filter_shape[2]-1)
+                new_shape[3] += (filter_shape[3]-1)
+            new_shape = tuple(new_shape)
+            self.BNlayer = BatchNormalization.BatchNormalization(new_shape, mode=1)
+
+            # save parameter of this layer for back-prop convinience
+        if BN == True : self.params = [self.W] + self.BNlayer.params
+        else : self.params = [self.W, self.b]
+
+        insize = input_shape[1] * input_shape[2] * input_shape[3]
+        self.paramins = [insize, insize]
+
+    def set_runmode(self, run_mode) :
+        self.BNlayer.set_runmode(run_mode) 
+
+    def get_result(self, input) :
+
+        if self.BN == True :
+            out = conv.conv2d(input, self.W, image_shape=self.input_shape, filter_shape=self.filter_shape, border_mode=self.border_mode)
+            out = self.BNlayer.get_result(out)
+        else :
+            out = conv.conv2d(input, self.W, image_shape=self.input_shape, filter_shape=self.filter_shape, border_mode=self.border_mode) + self.b.dimshuffle('x', 0, 'x', 'x')
+
+            # Leaky ReLU
+        self.output = T.switch(out<0, 0.01*out, out)
+        return self.output
+    
 class LeNetConvPoolLayer(object):
     """Pool Layer of a convolutional network """
 
@@ -287,11 +515,97 @@ class LeNetConvPoolLayer(object):
 
         # keep track of model input
         self.input = input
+from skimage import transform, exposure
+from skimage.util import random_noise
 
+import math
+import sys
+
+def flipImg(img):
+    width = 32
+    height = 32
+    imgR = numpy.zeros((32,32))
+   
+    for y in range(height):
+        for x in range(width//2):
+            left = img[x][y]
+            right = img[width - 1 - x][y]
+            imgR[width - 1 - x][y] = left
+            imgR[x][y]= right
+    return imgR
+
+def createNoise(img, switch_noise=0, var_noise=0.01):
+    
+    if(switch_noise ==0):
+        return img
+    elif(switch_noise==1): # gaussian noise
+#        imgR = numpy.zeros((3,32,32))      
+        imgR = random_noise(img.transpose(1,2,0), mode='gaussian', var=var_noise).transpose(2,0,1)
+        return imgR
+        
+    elif(switch_noise==2): # uniform noise
+        imgR = numpy.zeros((3,32,32))
+        imgR = random_noise(img.transpose(1,2,0), mode='speckle', var=var_noise).transpose(2,0,1)
+        #imgR[0] = random_noise(img[0], mode='speckle', var=var_noise)
+        #imgR[1] = random_noise(img[1], mode='speckle', var=var_noise)
+        #imgR[2] = random_noise(img[2], mode='speckle', var=var_noise)
+        return imgR
+        pass
+    else:
+        print ("Invalid argument to createNoise")
+        sys.exit(0)
+            
+def modify(images, translate, M, N, rotate, Rot, flip,switch_noise=0,var_noise=0):
+    
+    
+    imgR = numpy.zeros((len(images),3,32,32))
+    i=0  
+    
+
+
+    if(translate or rotate or flip or switch_noise):
+        for imgI in images:
+            imgT = imgI
+            imgT = createNoise(imgI, switch_noise, var_noise)
+
+            if(translate and rotate):
+                rot = random.randrange(-Rot, Rot)
+                trans1 = random.randint(-M,M)
+                trans2 = random.randint(-N,N)
+                tform = transform.AffineTransform(translation=(trans1,trans2), rotation=math.radians(rot))
+            elif(translate):
+                trans1 = random.randint(-M,M)
+                trans2 = random.randint(-N,N)
+                tform = transform.AffineTransform(translation=(trans1,trans2))
+            elif(rotate):
+                rot = random.randrange(-Rot, Rot)
+                tform = transform.AffineTransform(rotation=math.radians(rot))
+            else:
+                tform = transform.AffineTransform(scale=(1,1))
+            if(flip):
+                flipQ = random.randint(0,1)
+                if(flipQ):
+                    imgT[0] = flipImg(imgI[0])
+                    imgT[1] = flipImg(imgI[1])
+                    imgT[2] = flipImg(imgI[2])
+                    #print ("Fliiped")
+                else:
+                    #print("Not Flipped")
+                    pass
+                    
+            imgR[i][0] = transform.warp(imgT[0], tform)
+            imgR[i][1] = transform.warp(imgT[1], tform)
+            imgR[i][2] = transform.warp(imgT[2], tform)
+                #raw_input("hello")
+            i+=1
+        return imgR
+        
+    return images
+    
 
 def train_nn(train_model, validate_model, test_model,
-            n_train_batches, n_valid_batches, n_test_batches, n_epochs,
-            verbose = True):
+             n_epochs,batch_size=500, M=0, N=0, Rot=0,Flip=False,switch_noise=0,var_noise=0,
+            verbose = True,prob=3):
     """
     Wrapper function for training and test THEANO model
 
@@ -322,6 +636,24 @@ def train_nn(train_model, validate_model, test_model,
     """
 
     # early-stopping parameters
+    
+    
+    
+    datasets = load_data(ds_rate=1.000001,theano_shared=False)
+    
+
+    train_set_x, train_set_y = datasets[0]
+    valid_set_x, valid_set_y = datasets[1]
+    test_set_x, test_set_y = datasets[2]
+
+    # compute number of minibatches for training, validation and testing
+    n_train_batches = train_set_x.shape[0]
+    n_valid_batches = valid_set_x.shape[0]
+    n_test_batches = test_set_x.shape[0]
+    n_train_batches //= batch_size
+    n_valid_batches //= batch_size
+    n_test_batches //= batch_size
+    
     patience = 10000  # look as this many examples regardless
     patience_increase = 2  # wait this much longer when a new best is
                            # found
@@ -332,6 +664,8 @@ def train_nn(train_model, validate_model, test_model,
                                   # minibatche before checking the network
                                   # on the validation set; in this case we
                                   # check every epoch
+                    
+    #validation_frequency =10
 
     best_validation_loss = numpy.inf
     best_iter = 0
@@ -340,22 +674,60 @@ def train_nn(train_model, validate_model, test_model,
 
     epoch = 0
     done_looping = False
+    
 
+    translate=0
+    if(M!=0 or N!=0):
+        translate=1
+        print ("Data Augmentation with translate with")
+        print (M)
+        print (N)
+    rotate=0
+    if(Rot!=0):
+        print ("Data Augmentation with rotation")
+        print ((Rot))
+        rotate=1
+    if(Flip):
+        print ("Horizontal Flipping")
+        
+    print ("swith_noise")
+    print (switch_noise)
+    
+    
     while (epoch < n_epochs) and (not done_looping):
         epoch = epoch + 1
         for minibatch_index in range(n_train_batches):
-
+            index= minibatch_index
+            train_x = modify(train_set_x[index * batch_size: (index + 1) * batch_size], translate, M, N, rotate, Rot, Flip,switch_noise,var_noise)
+            if index>=1 and (prob==2 or prob ==3):
+                train_x_1 = train_set_x[(index-1) * batch_size: (index) * batch_size]
+                train_y_1 = train_set_y[(index-1) * batch_size: (index) * batch_size]
+            #train_x_1 = modify(train_set_x[index * batch_size: (index + 1) * batch_size], 0, 0, 0, 0, 0, False,0,0)
+            train_y = train_set_y[index* batch_size: (index + 1) * batch_size]
             iter = (epoch - 1) * n_train_batches + minibatch_index
 
             if (iter % 100 == 0) and verbose:
                 print('training @ iter = ', iter)
-            cost_ij = train_model(minibatch_index)
+                
+            cost_ij = train_model(train_x, train_y)
+            #cost_ij = train_model(train_x_1,train_y)
+            if index>=1 and (prob==2 or prob ==3):
+                cost_ij = train_model(train_x_1,train_y_1)
 
             if (iter + 1) % validation_frequency == 0:
 
                 # compute zero-one loss on validation set
-                validation_losses = [validate_model(i) for i
-                                     in range(n_valid_batches)]
+                validation_losses=numpy.zeros(n_valid_batches)
+                for ival in range(n_valid_batches):
+                    valid_x = valid_set_x[ival * batch_size: (ival + 1) * batch_size]
+                    valid_y= valid_set_y[ival * batch_size: (ival + 1) * batch_size]
+                    #print (valid_x)
+                    #valid_x = numpy.reshape(valid_x, (batch_size,3,32,32))
+                    validation_losses[ival] = validate_model(valid_x, valid_y)
+                    
+                    #valdiation_losses[ival]=
+                    
+                
                 this_validation_loss = numpy.mean(validation_losses)
 
                 if verbose:
@@ -378,11 +750,14 @@ def train_nn(train_model, validate_model, test_model,
                     best_iter = iter
 
                     # test it on the test set
-                    test_losses = [
-                        test_model(i)
-                        for i in range(n_test_batches)
-                    ]
-                    test_score = numpy.mean(test_losses)
+                    test_losses=numpy.zeros(n_test_batches)
+                    for itest in range(n_test_batches):
+                        test_x = test_set_x[itest * batch_size: (itest + 1) * batch_size],
+                        test_y= test_set_y[itest* batch_size: (itest + 1) * batch_size]
+                        test_x = numpy.reshape(test_x, (batch_size,3,32,32))
+                        test_losses[itest]=test_model(test_x, test_y)
+
+                    test_score= numpy.mean(test_losses)
 
                     if verbose:
                         print(('     epoch %i, minibatch %i/%i, test error of '
@@ -409,4 +784,3 @@ def train_nn(train_model, validate_model, test_model,
     print(('The training process for function ' +
            calframe[1][3] +
            ' ran for %.2fm' % ((end_time - start_time) / 60.)), file=sys.stderr)
-

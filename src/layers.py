@@ -18,15 +18,15 @@ import timeit
 import inspect
 import sys
 
-from hw3_utils import shared_dataset, load_data
-from hw3_nn import LogisticRegression, HiddenLayer, LeNetConvPoolLayer, train_nn, drop, DropoutHiddenLayer,BNConvLayer,ConvLayer
+from utils import shared_dataset, load_data
+from nn import LogisticRegression, HiddenLayer, LeNetConvPoolLayer, train_nn, drop, DropoutHiddenLayer,BNConvLayer,ConvLayer
 from skimage import transform, exposure
 import numpy as np
 from theano.tensor.signal import pool
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from hw3_utils_prob4 import load_data_prob4
+from utils_4 import load_data_prob4
 
 
 import math
@@ -34,8 +34,7 @@ import time
 import BatchNormalization as BN
 
 
-#Problem 1
-#Implement the convolutional neural network architecture depicted in HW3 problem 1
+
 #Reference code can be found in http://deeplearning.net/tutorial/code/convolutional_mlp.py
 # Code for Adam modified from https://gist.github.com/Newmu/acb738767acb4788bac3
 def Adam(cost, params, grads, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
@@ -61,356 +60,14 @@ def Adam(cost, params, grads, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
     updates.append((i, i_t))
     return updates
 
-def test_lenet(ds_rate=1.000001,learning_rate=0.1, n_epochs=300,nkerns=[32, 64], batch_size=500, M=0, N=0, Rot=0, Flip=False,switch_noise=0,var_noise=0, verbose=True,prob=2):
-    
-    rng = np.random.RandomState(23455)
-    
-
-    # allocate symbolic variables for the data
-    index = T.lscalar()  # index to a [mini]batch
-    
-    # start-snippet-1
-    x = T.tensor4('x')   # the data is presented as rasterized images
-    y = T.ivector('y')  # the labels are presented as 1D vector of
-                        # [int] labels
-
-    ######################
-    # BUILD ACTUAL MODEL #
-    ######################
-    print('... building the model')
-
-    # Reshape matrix of rasterized images of shape (batch_size, 32* 32)
-    # to a 4D tensor, compatible with our LeNetConvPoolLayer
-    # (32, 32) is the size of images.
-    layer0_input = x.reshape((batch_size, 3, 32, 32))
-
-    # Construct the first convolutional pooling layer:
-    # filtering reduces the image size to (32-3+1 , 32-3+1) = (30,30)
-    # maxpooling reduces this further to (30/2, 30/2) = (15, 15)
-    # 4D output tensor is thus of shape (batch_size, nkerns[0], 15, 15)
-    layer0 = LeNetConvPoolLayer(
-        rng,
-        input=layer0_input,
-        image_shape=(batch_size, 3, 32, 32),
-        filter_shape=(nkerns[0], 3, 3, 3),
-        poolsize=(2, 2)
-    )
-
-    # Construct the second convolutional pooling layer
-    # filtering reduces the image size to (15-3+1, 15-3+1) = (13, 13)
-    # maxpooling reduces this further to (13/2, 13/2) = (6, 6)
-    # 4D output tensor is thus of shape (batch_size, nkerns[1], 6, 6)
-    layer1 = LeNetConvPoolLayer(
-        rng,
-        input=layer0.output,
-        image_shape=(batch_size, nkerns[0], 15, 15),
-        filter_shape=(nkerns[1], nkerns[0], 3, 3),
-        poolsize=(2, 2)
-    )
-
-    # the HiddenLayer being fully-connected, it operates on 2D matrices of
-    # shape (batch_size, num_pixels) (i.e matrix of rasterized images).
-    # This will generate a matrix of shape (batch_size, nkerns[1] * 6 * 6),
-    # or (500, 64 * 6 * 6) = (500, 2304) with the default values.
-    layer2_input = layer1.output.flatten(2)
-
-
-    # construct a fully-connected sigmoidal layer
-    layer2 = HiddenLayer(
-        rng,
-        input=layer2_input,
-        n_in=nkerns[1]*6*6,
-        n_out=4096,
-        activation=T.tanh
-    )
-    layer3 = HiddenLayer(
-        rng,
-        input=layer2.output,
-        n_in=4096,
-        n_out=512,
-        activation=T.tanh
-    )   
-    # classify the values of the fully-connected sigmoidal layer
-    layer4 = LogisticRegression(input=layer3.output, n_in=512, n_out=10)
-
-    # the cost we minimize during training is the NLL of the model
-    cost = layer4.negative_log_likelihood(y)
-
-    
-    # create a function to compute the mistakes that are made by the model
-    
-    test_model = theano.function(
-        [x,y],
-        layer4.errors(y),
-        allow_input_downcast=True
-
-    )
-
-    validate_model = theano.function(
-        [x,y],
-        layer4.errors(y),
-        allow_input_downcast=True
-
-    )
-
-    # create a list of all model parameters to be fit by gradient descent
-    params = layer4.params + layer3.params + layer2.params + layer1.params + layer0.params
-
-    # create a list of gradients for all model parameters
-    grads = T.grad(cost, params)
-
-    # train_model is a function that updates the model parameters by
-    # SGD Since this model has many parameters, it would be tedious to
-    # manually create an update rule for each model parameter. We thus
-    # create the updates list by automatically looping over all
-    # (params[i], grads[i]) pairs.
-    #updates = [
-       # (param_i, param_i - learning_rate * grad_i)for param_i, grad_i in zip(params, grads)
-    #]
-    updates = Adam (cost, params, grads)
-    
-    train_model = theano.function(
-        [x,y],
-        cost,
-        updates=updates,
-        allow_input_downcast=True
-     
-    )
-    # end-snippet-1
-
-    ###############
-    # TRAIN MODEL #
-    ###############
-    print('... training')
-    train_nn(train_model, validate_model, test_model, n_epochs, batch_size, M=M,N=N, Rot=Rot, Flip=Flip,switch_noise=switch_noise,var_noise=var_noise, verbose = True,prob=prob)
-
 
 
 PIXELS = 32
 imageSize = PIXELS * PIXELS
 num_features = imageSize
 
-# #Problem 2.1
-# Write a function to add translations
-#This is all handled by test_lenet by passing diff parameters 
-# this will do the translation on an training data-image and return me 
-# #Implement a convolutional neural network with the translation method for augmentation
-#def test_lenet_rotation(ds_rate=1.000001,learning_rate=0.1, n_epochs=300,nkerns=[32, 64], batch_size=64, M=0, N=0, Rot=0, Flip=False,switch_noise=0,var_noise=0, verbose=True):
-    
 
-
-
-
-
-# #Problem 2.2
-# #Write a function to add roatations
-# def rotate_image():
-# all handled by test_lenet, modify function 
-# #Implement a convolutional neural network with the rotation method for augmentation
-# def test_lenet_rotation():
-
-# #Problem 2.3
-# #Write a function to flip images
-# def flip_image():
-# #Implement a convolutional neural network with the flip method for augmentation
-# def test_lenet_flip():
-    
-    
-# #Problem 2.4
-# #Write a function to add noise, it should at least provide Gaussian-distributed and uniform-distributed noise with zero mean
-#def noise_injection():
-# #Implement a convolutional neural network with the augmentation of injecting noise into input
-# def test_lenet_inject_noise_input():
-    
-# #Problem 3 
-# #Implement a convolutional neural network to achieve at least 80% testing accuracy on CIFAR-dataset
-def MY_lenet(ds_rate=1.000001,learning_rate=0.1, n_epochs=300,nkerns=[32, 64,64], batch_size=64,p1=0.5,p2=0.7, M=0, N=0, Rot=0, Flip=False,switch_noise=0,var_noise=0, verbose=True,prob=3):
-
-    rng = np.random.RandomState(23455)
-    
-
-    # allocate symbolic variables for the data
-    index = T.lscalar()  # index to a [mini]batch
-    training_enabled = T.iscalar('training_enabled') # pseudo boolean for switching between training and prediction
-    # start-snippet-1
-    x = T.tensor4('x')   # the data is presented as rasterized images
-    y = T.ivector('y')  # the labels are presented as 1D vector of
-                        # [int] labels
-
-    ######################
-    # BUILD ACTUAL MODEL #
-    ######################
-    print('... building the model')
-
-    # Reshape matrix of rasterized images of shape (batch_size, 32* 32)
-    # to a 4D tensor, compatible with our LeNetConvPoolLayer
-    # (32, 32) is the size of images.
-    layer0_input = x.reshape((batch_size, 3, 32, 32))
-
-    # Construct the first convolutional pooling layer:
-    # filtering reduces the image size to (32-3+1 , 32-3+1) = (30,30)
-    # maxpooling reduces this further to (30/2, 30/2) = (15, 15)
-    # 4D output tensor is thus of shape (batch_size, nkerns[0], 15, 15)
-    layer0 = LeNetConvPoolLayer(
-        rng,
-        input=layer0_input,
-        image_shape=(batch_size, 3, 32, 32),
-        filter_shape=(nkerns[0], 3, 3, 3),
-        poolsize=(2, 2)
-    )
-
-    # Construct the second convolutional pooling layer
-    # filtering reduces the image size to (15-3+1, 15-3+1) = (13, 13)
-    # maxpooling reduces this further to (13/1, 13/1) = (13, 13)
-    # 4D output tensor is thus of shape (batch_size, nkerns[1], 13, 13)
-    layer1 = LeNetConvPoolLayer(
-        rng,
-        input=layer0.output,
-        image_shape=(batch_size, nkerns[0], 15, 15),
-        filter_shape=(nkerns[1], nkerns[0], 3, 3),
-        poolsize=(1, 1)
-    )
-
-    # Construct the next layer
-    # filtering reduces the image size to (13-3+1, 13-3+1) = (11, 11)
-
-   
-    
-    batch_normalisation=BNConvLayer(
-            input_shape=(batch_size, nkerns[1],13,13),
-            filter_shape=(nkerns[2],nkerns[1],3,3),
-            border_mode="valid",
-            BN=True)
-            
-            
-    #ouput of batch normalisation (batch_size, nkerns[2],11,11)
-    #after  flattening (batch_size, nkerns[2]*11*11)
-        
-    layer2_input = batch_normalisation.get_result(layer1.output).flatten(2)
-    
-
-    # construct a fully-connected sigmoidal layer
-    layer2 = DropoutHiddenLayer(
-        rng=rng,
-        is_train=training_enabled,
-        input=layer2_input,
-        n_in= nkerns[2] * 11 * 11,
-        n_out=1200,
-        W=None,
-        b=None,
-        activation=T.tanh,
-        p=p1)
-    
-    
-    layer3_input=layer2.output.reshape((batch_size,3,20,20))
-    # Construct the another convolutional pooling layer:
-    # filtering reduces the output to (20-1+1 , 20-1+1) = (20,20)
-    # maxpooling reduces this further to (20/2, 20/2) = (10, 10)
-    # 4D output tensor is thus of shape (batch_size, 32, 10, 10)
-    
-    layer3 = LeNetConvPoolLayer(
-        rng,
-        input=layer3_input,
-        image_shape=(batch_size,3,20,20),
-        filter_shape=(32, 3, 1, 1),
-        poolsize=(2, 2)
-    )
-    #after flattening (batch_size,32*9*9)
-        
-    layer4_input= layer3.output.flatten(2)
-   
-    layer4 =  DropoutHiddenLayer(
-        rng=rng,
-        is_train=training_enabled,
-        input=layer4_input,
-        n_in= 32*10*10,
-        n_out=1000,
-        W=None,
-        b=None,
-        activation=T.tanh,
-        p=p2)
-    layer5 =  DropoutHiddenLayer(
-        rng=rng,
-        is_train=training_enabled,
-        input=layer4.output,
-        n_in= 1000,
-        n_out=512,
-        W=None,
-        b=None,
-        activation=T.tanh,
-        p=1)    
-
-  
-    # classify the values of the fully-connected sigmoidal layer
-    layer6 = LogisticRegression(input=layer5.output, n_in=512, n_out=10)
-
-    # the cost we minimize during training is the NLL of the model
-    cost = layer6.negative_log_likelihood(y)
-
-    
-    # create a function to compute the mistakes that are made by the model
-    
-    test_model = theano.function(
-        [x,y],
-        layer6.errors(y),
-        allow_input_downcast=True,
-        givens={
-            training_enabled: numpy.cast['int32'](0)
-            }
-
-    )
-
-    validate_model = theano.function(
-        [x,y],
-        layer6.errors(y),
-        allow_input_downcast=True,
-        givens={
-            training_enabled: numpy.cast['int32'](0)
-            }
-
-    )
-
-    # create a list of all model parameters to be fit by gradient descent
-    params = batch_normalisation.params + layer6.params + layer5.params+layer4.params + layer3.params + layer2.params + layer1.params + layer0.params
-
-    # create a list of gradients for all model parameters
-    grads = T.grad(cost, params)
-    
-
-    # train_model is a function that updates the model parameters by
-    # SGD Since this model has many parameters, it would be tedious to
-    # manually create an update rule for each model parameter. We thus
-    # create the updates list by automatically looping over all
-    # (params[i], grads[i]) pairs.
-    updates = Adam(cost,params,grads)
-    
-    train_model = theano.function(
-        [x,y],
-        cost,
-        updates=updates,
-        allow_input_downcast=True,
-        givens={
-            training_enabled: numpy.cast['int32'](1)
-            }
-     
-    )
-    # end-snippet-1
-
-    ###############
-    # TRAIN MODEL #
-    ###############
-    print('... training')
-    train_nn(train_model, validate_model, test_model, n_epochs, batch_size=batch_size,M=M,N=N, Rot=Rot, Flip=Flip,switch_noise=switch_noise,var_noise=var_noise, verbose = True,prob=prob)
-
-
-
-
-
-
-
-# #Problem4
-# #Implement the convolutional neural network depicted in problem4 
-def MY_CNN( n_epochs=128, batch_size=500):
+def resotre_CNN( n_epochs=128, batch_size=500):
     
 
     rng = numpy.random.RandomState(23455)
